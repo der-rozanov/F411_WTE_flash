@@ -1,0 +1,45 @@
+# --- STM32CubeIDE / Eclipse ---
+# Рабочее пространство IDE (локальные настройки, индексы, логи)
+.metadata/
+RemoteSystemsTempFiles/
+
+# Каталоги сборки
+**/Debug/
+**/Release/
+build/
+cmake-build-*/
+
+# Машинно-зависимые настройки индексатора
+**/.settings/language.settings.xml
+
+# --- Артефакты компиляции ---
+*.o
+*.d
+*.su
+*.cyclo
+*.a
+*.lst
+*.map
+*.list
+*.elf
+*.bin
+*.hex
+*.srec
+*.axf
+
+# --- Резервные копии STM32CubeMX ---
+*.ioc.bak
+**/.mxproject.bak
+
+# --- Отладка ---
+*.log
+.gdbinit.local
+
+# --- Редакторы и ОС ---
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+desktop.ini
+.DS_Store
