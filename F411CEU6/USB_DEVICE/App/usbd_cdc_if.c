@@ -24,6 +24,7 @@
 /* USER CODE BEGIN INCLUDE */
 #include <string.h>
 #include "bootloader.h"
+#include "svc_console.h"
 /* USER CODE END INCLUDE */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -97,10 +98,6 @@ uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
 /* USER CODE BEGIN PRIVATE_VARIABLES */
 /* Текущие параметры порта: 115200 8N1 по умолчанию */
 static uint8_t lineCoding[7] = { 0x00, 0xC2, 0x01, 0x00, 0x00, 0x00, 0x08 };
-
-/* Строка текстовой команды (например "dfu") */
-static char cmdLine[16];
-static uint32_t cmdLen;
 
 static uint32_t LineCoding_Baud(void)
 {
@@ -278,26 +275,8 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
-  static const char dfuReply[] = "Rebooting to DFU...\r\n";
-
-  for (uint32_t i = 0; i < *Len; i++)
-  {
-    char c = (char)Buf[i];
-    if ((c == '\r') || (c == '\n'))
-    {
-      cmdLine[cmdLen] = '\0';
-      if (strcmp(cmdLine, "dfu") == 0)
-      {
-        CDC_Transmit_FS((uint8_t *)dfuReply, sizeof(dfuReply) - 1U);
-        Bootloader_RequestDfu();
-      }
-      cmdLen = 0;
-    }
-    else if (cmdLen < (sizeof(cmdLine) - 1U))
-    {
-      cmdLine[cmdLen++] = c;
-    }
-  }
+  /* В прерывании только складываем байты; команды (и "dfu") разбирает стенд */
+  console_receive(Buf, *Len);
 
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);

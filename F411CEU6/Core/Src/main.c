@@ -30,6 +30,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "bootloader.h"
+#include "bench_commands.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -39,7 +40,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define BLINK_PERIOD_MS  500u
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -104,8 +105,7 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   /* Светодиоды на SWD-пинах (PA13/PA14), поэтому SWD нет - только DFU */
-  HAL_GPIO_WritePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin, GPIO_PIN_SET);
-  uint32_t blinkTick = HAL_GetTick();
+  bench_init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -115,11 +115,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    if ((HAL_GetTick() - blinkTick) >= BLINK_PERIOD_MS)
-    {
-      blinkTick += BLINK_PERIOD_MS;
-      HAL_GPIO_TogglePin(GPIOA, LED_GREEN_Pin | LED_BLUE_Pin);
-    }
+    bench_poll();
     Bootloader_Poll();
   }
   /* USER CODE END 3 */
