@@ -17,13 +17,16 @@
 #include "drv_at7456.h"
 #include "drv_power.h"
 #include "drv_outputs.h"
+#include "svc_settings.h"
 #include "bench_commands.h"
 
 #define LINE_SIZE              48u
 #define WORD_SIZE              16u
-#define BLINK_PERIOD_MS        500u
 
-#define MOTOR_COUNT            2u      /* S1, S2 */
+#define IMU_INIT_MAX_ATTEMPTS  3u
+#define IMU_INIT_RETRY_DELAY_MS 20u
+
+#define MOTOR_COUNT          2u      /* S1, S2 */
 #define MOTOR_STOP_US          1000u   /* регулятор видит «газ ноль» */
 #define MOTOR_TEST_MAX_US      1200u   /* потолок газа на время испытаний */
 #define MOTOR_DISARM_TIMEOUT_MS 10000u /* без команд 10 с -> disarm */
@@ -38,9 +41,11 @@
 #define DECIMALS_CENTI         2
 
 static bool imu_ready;
+static uint32_t imu_init_attempts;  /* с какой попытки запустился гироскоп при старте */
 static bool motors_armed;
 static uint32_t last_command_ms;
 static uint32_t blink_ms;
+static bool settings_loaded;  /* false = во flash пусто, работают значения по умолчанию */
 
 /* Число с фиксированной точкой: print_fixed(-1234, 3) -> "-1.234" */
 static void print_fixed(int32_t value, int decimals)
@@ -259,7 +264,8 @@ static void command_pinio(const char *number_word, const char *level_word)
 static void command_status(void)
 {
   console_printf("uptime %lu s\r\n", (unsigned long)(HAL_GetTick() / MS_PER_SECOND));
-  console_printf("imu:  %s\r\n", imu_ready ? "BMI270 running" : "not running");
+  console_printf("imu:  %s, boot init attempts %lu\r\n", imu_ready ? "BMI270 running" : "not running",
+                 (unsigned long)imu_init_attempts);
   if (spl06_address() != 0u)
   {
     console_printf("baro: SPL06 at 0x%02X\r\n", spl06_address());
@@ -270,7 +276,42 @@ static void command_status(void)
   }
   console_printf("osd:  %s\r\n", at7456_is_present() ? "AT7456E found" : "not found");
   console_printf("motors: %s\r\n", motors_armed ? "ARMED" : "disarmed");
+  console_printf("blink: %lu ms, settings at boot: %s\r\n", (unsigned long)settings.blink_period_ms,
+                 settings_loaded ? "from flash" : "defaults");
   command_power();
+}
+
+/* ---------------- настройки ---------------- */
+
+/* Без аргумента — показать, с аргументом — поменять в RAM (до save) */
+static void command_blink(const char *period_word)
+{
+  unsigned long period_ms = 0;
+
+  if (period_word[0] == '\0')
+  {
+    console_printf("blink: %lu ms\r\n", (unsigned long)settings.blink_period_ms);
+    return;
+  }
+  if ((sscanf(period_word, "%lu", &period_ms) != 1) || !settings_blink_period_is_valid(period_ms))
+  {
+    console_printf("usage: blink <%u..%u ms>\r\n", BLINK_PERIOD_MIN_MS, BLINK_PERIOD_MAX_MS);
+    return;
+  }
+  settings.blink_period_ms = period_ms;
+  console_printf("blink: %lu ms (not saved, type save)\r\n", period_ms);
+}
+
+static void command_save(void)
+{
+  /* На время стирания сектора цикл стоит 1–2 с, автодизарм не сработает */
+  if (motors_armed)
+  {
+    console_printf("save: disarm first\r\n");
+    return;
+  }
+  /* Время записи здесь не измерить: пока стирается сектор, SysTick тоже стоит */
+  console_printf("save: %s\r\n", settings_save() ? "ok" : "FLASH ERROR");
 }
 
 static void command_help(void)
@@ -288,6 +329,10 @@ static void command_help(void)
   console_printf("arm / disarm      motors S1/S2, max %u us, auto disarm %u s\r\n",
                  MOTOR_TEST_MAX_US, MOTOR_DISARM_TIMEOUT_MS / MS_PER_SECOND);
   console_printf("pinio <1|2> <0|1> PC15 Vbat switch / PB10 camera switch\r\n");
+  console_printf("blink [ms]        show / set LED blink period, %u..%u\r\n",
+                 BLINK_PERIOD_MIN_MS, BLINK_PERIOD_MAX_MS);
+  console_printf("save              write settings to flash\r\n");
+  console_printf("reboot            restart the board\r\n");
   console_printf("dfu               reboot to DFU bootloader\r\n");
 }
 
@@ -316,6 +361,9 @@ static void execute(char *line)
     console_printf("ARMED: S1/S2 = %u us. Props off!\r\n", MOTOR_STOP_US);
   }
   else if (strcmp(command, "disarm") == 0)  { disarm("command"); }
+  else if (strcmp(command, "blink") == 0)   { command_blink(arg1); }
+  else if (strcmp(command, "save") == 0)    { command_save(); }
+  else if (strcmp(command, "reboot") == 0)  { NVIC_SystemReset(); }
   else if (strcmp(command, "dfu") == 0)
   {
     console_printf("Rebooting to DFU...\r\n");
@@ -333,11 +381,22 @@ void bench_init(void)
   HAL_GPIO_WritePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(LED_BLUE_GPIO_Port, LED_BLUE_Pin, GPIO_PIN_RESET);
   blink_ms = HAL_GetTick();
+  settings_loaded = settings_load();
 
   /* Ошибки здесь не останавливают стенд: их покажут status и команды датчиков */
   (void)outputs_init();
   (void)power_init();
-  imu_ready = bmi270_init();
+  /* После холодного включения первая попытка не проходит (проверено 23.10.2026):
+     чип ещё не готов, когда МК уже стартовал. Сброс и перепрошивка этого не видят */
+  for (imu_init_attempts = 1; imu_init_attempts <= IMU_INIT_MAX_ATTEMPTS; imu_init_attempts++)
+  {
+    imu_ready = bmi270_init();
+    if (imu_ready)
+    {
+      break;
+    }
+    HAL_Delay(IMU_INIT_RETRY_DELAY_MS);
+  }
   (void)spl06_init();
 }
 
@@ -346,9 +405,10 @@ void bench_poll(void)
   char line[LINE_SIZE];
   uint32_t now_ms = HAL_GetTick();
 
-  if ((now_ms - blink_ms) >= BLINK_PERIOD_MS)
+  /* blink_ms = now, а не += период: после смены периода не догонять пропущенные мигания */
+  if ((now_ms - blink_ms) >= settings.blink_period_ms)
   {
-    blink_ms += BLINK_PERIOD_MS;
+    blink_ms = now_ms;
     HAL_GPIO_TogglePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin);
     HAL_GPIO_TogglePin(LED_BLUE_GPIO_Port, LED_BLUE_Pin);
   }
